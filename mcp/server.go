@@ -247,9 +247,17 @@ func (s *Server) tools() []Tool {
 	}
 }
 
+// Run serves the MCP protocol over stdin/stdout (the default transport).
 func (s *Server) Run() error {
-	reader := bufio.NewReader(os.Stdin)
-	writer := os.Stdout
+	return s.serve(os.Stdin, os.Stdout)
+}
+
+// serve runs the JSON-RPC read/dispatch loop over the given streams. It backs
+// the stdio transport (Run) and is transport-agnostic so the request handling
+// stays identical across transports.
+func (s *Server) serve(in io.Reader, out io.Writer) error {
+	reader := bufio.NewReader(in)
+	writer := out
 
 	for {
 		line, err := reader.ReadString('\n')
