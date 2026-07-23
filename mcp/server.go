@@ -47,6 +47,7 @@ func (r Response) MarshalJSON() ([]byte, error) {
 type Error struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 // MCP protocol types
@@ -63,9 +64,19 @@ type InitializeResult struct {
 }
 
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	InputSchema InputSchema `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	InputSchema InputSchema      `json:"inputSchema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations are optional behavioural hints attached to a tool so MCP
+// clients can distinguish read-only tools from destructive ones and warn (or
+// require confirmation) before running a mutating operation.
+type ToolAnnotations struct {
+	ReadOnlyHint         bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint      bool `json:"destructiveHint,omitempty"`
+	ConfirmationRequired bool `json:"confirmationRequired,omitempty"`
 }
 
 type InputSchema struct {
@@ -112,14 +123,24 @@ type CallToolParams struct {
 
 type Server struct {
 	client apiClient
+	role   Role
 }
 
+// NewServer constructs an MCP server, resolving its permission role from the
+// MCP_ROLE environment variable. When MCP_ROLE is unset the server runs as
+// admin (no restriction), preserving prior behaviour.
 func NewServer(client *api.Client) *Server {
-	return &Server{client: client}
+	return &Server{client: client, role: resolveRole(os.Getenv("MCP_ROLE"))}
+}
+
+// NewServerWithRole constructs a server with an explicit role, bypassing the
+// MCP_ROLE environment lookup. Primarily useful for tests.
+func NewServerWithRole(client *api.Client, role Role) *Server {
+	return &Server{client: client, role: role}
 }
 
 func (s *Server) tools() []Tool {
-	return []Tool{
+	list := []Tool{
 		{
 			Name:        "get_status",
 			Description: "Get DNS engine status and query statistics",
@@ -245,6 +266,17 @@ func (s *Server) tools() []Tool {
 			},
 		},
 	}
+
+	// Attach behavioural annotations derived from the tool classification so
+	// clients can flag read-only vs destructive (confirmation-required) tools.
+	for i := range list {
+		if isReadOnly(list[i].Name) {
+			list[i].Annotations = &ToolAnnotations{ReadOnlyHint: true}
+		} else {
+			list[i].Annotations = &ToolAnnotations{DestructiveHint: true, ConfirmationRequired: true}
+		}
+	}
+	return list
 }
 
 // Run serves the MCP protocol over stdin/stdout (the default transport).
@@ -330,6 +362,15 @@ func (s *Server) handleRequest(req Request) Response {
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Error:   &Error{Code: -32602, Message: "Invalid params"},
+			}
+		}
+		// Role gate: reject tools the active role may not call, returning a
+		// structured JSON-RPC error instead of executing the tool.
+		if !s.role.Allows(params.Name) {
+			return Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error:   permissionError(s.role, params.Name),
 			}
 		}
 		result := s.callTool(params)
