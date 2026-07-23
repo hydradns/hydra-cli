@@ -57,14 +57,14 @@ type ServerInfo struct {
 }
 
 type InitializeResult struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	Capabilities    map[string]any    `json:"capabilities"`
-	ServerInfo      ServerInfo        `json:"serverInfo"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ServerInfo      ServerInfo     `json:"serverInfo"`
 }
 
 type Tool struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
 	InputSchema InputSchema `json:"inputSchema"`
 }
 
@@ -111,7 +111,7 @@ type CallToolParams struct {
 // Server
 
 type Server struct {
-	client *api.Client
+	client apiClient
 }
 
 func NewServer(client *api.Client) *Server {
@@ -191,6 +191,58 @@ func (s *Server) tools() []Tool {
 			Name:        "get_metrics",
 			Description: "Get DNS query performance metrics including latency percentiles",
 			InputSchema: InputSchema{Type: "object"},
+		},
+		{
+			Name:        "get_weekly_summary",
+			Description: "Get a natural-language rollup of DNS security activity (traffic, block rate, performance, and protection coverage) built from live stats, metrics, and query logs. Best for an at-a-glance report.",
+			InputSchema: InputSchema{Type: "object"},
+		},
+		{
+			Name:        "explain_anomaly",
+			Description: "Inspect current DNS activity and describe anything unusual (elevated error rate, degraded latency, block-rate spikes, or a single client dominating traffic). Optionally pass a baseline to compare against.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"baseline_block_rate":     Property{Type: "number", Description: "Prior block rate percent to compare current block rate against (optional)"},
+					"max_error_rate_percent":  Property{Type: "number", Description: "Error-rate threshold that counts as an anomaly. Default 5.0"},
+					"block_rate_jump_percent": Property{Type: "number", Description: "Increase in block rate (percentage points) vs baseline that counts as a spike. Default 15.0"},
+				},
+			},
+		},
+		{
+			Name:        "compare_to_last_month",
+			Description: "Compare current DNS traffic and block rate against a baseline window (e.g. last month) and describe the changes in plain language. Supply the baseline figures from a prior summary.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"baseline_total_queries":   Property{Type: "integer", Description: "Total queries during the baseline period (optional)"},
+					"baseline_blocked_queries": Property{Type: "integer", Description: "Blocked queries during the baseline period (optional)"},
+					"baseline_block_rate":      Property{Type: "number", Description: "Block rate percent during the baseline period (optional)"},
+					"label":                    Property{Type: "string", Description: "Name of the baseline period for the report. Default 'last month'"},
+				},
+			},
+		},
+		{
+			Name:        "bulk_unblock",
+			Description: "Remove multiple policies at once by their IDs. Reports which were removed and which failed.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"policy_ids": ArrayProperty{Type: "array", Description: "List of policy IDs to remove", Items: ItemType{Type: "string"}},
+				},
+				Required: []string{"policy_ids"},
+			},
+		},
+		{
+			Name:        "delete_policy",
+			Description: "Delete a single DNS policy by its ID. Works for BLOCK, ALLOW, and REDIRECT policies.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]any{
+					"policy_id": Property{Type: "string", Description: "The policy ID to delete"},
+				},
+				Required: []string{"policy_id"},
+			},
 		},
 	}
 }
@@ -311,6 +363,16 @@ func (s *Server) callTool(params CallToolParams) CallToolResult {
 		return s.toolGetQueryLogs()
 	case "get_metrics":
 		return s.toolGetMetrics()
+	case "get_weekly_summary":
+		return s.toolGetWeeklySummary()
+	case "explain_anomaly":
+		return s.toolExplainAnomaly(params.Arguments)
+	case "compare_to_last_month":
+		return s.toolCompareToLastMonth(params.Arguments)
+	case "bulk_unblock":
+		return s.toolBulkUnblock(params.Arguments)
+	case "delete_policy":
+		return s.toolDeletePolicy(params.Arguments)
 	default:
 		return CallToolResult{
 			Content: []ContentItem{{Type: "text", Text: "Unknown tool: " + params.Name}},
